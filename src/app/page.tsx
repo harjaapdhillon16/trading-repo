@@ -10,7 +10,7 @@ import {
   Time,
   MouseEventParams
 } from "lightweight-charts";
-import { Play, Pause, RotateCcw, FastForward, Target, ShieldAlert,Activity } from "lucide-react";
+import { Play, Pause, RotateCcw, FastForward, Target, ShieldAlert, Ban } from "lucide-react";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 
@@ -21,7 +21,7 @@ function cn(...inputs: ClassValue[]) {
 
 // --- Constants ---
 const MARKET_OPEN_MIN = 570; // 09:30
-const MARKET_CLOSE_MIN = 1000; // 16:10
+const MARKET_CLOSE_MIN = 970; // 16:10
 
 // --- Types ---
 type Tick = { ts: string; price: number; volume: number; m: number };
@@ -160,11 +160,11 @@ export default function TradingReplayPage() {
                 break;
             case "ArrowUp":
                 e.preventDefault();
-                setPlaybackSpeed(s => Math.min(s + 5, 500)); // Increase by 5x
+                setPlaybackSpeed(s => Math.min(s + 5, 500));
                 break;
             case "ArrowDown":
                 e.preventDefault();
-                setPlaybackSpeed(s => Math.max(s - 5, 1)); // Decrease by 5x
+                setPlaybackSpeed(s => Math.max(s - 5, 1));
                 break;
             case "ArrowRight":
                 if (selectedDay) {
@@ -208,24 +208,14 @@ export default function TradingReplayPage() {
 
     chartsRef.current[instrument] = { chart, series, lines: [] };
 
-    // --- CHART CLICK HANDLER FOR SL/TP ---
-    chart.subscribeClick((param: MouseEventParams) => {
-        if (!param.point || !param.time || !param.seriesData.size) return;
-        
-        // We use a ref-like check for editMode inside the closure, 
-        // but state is tricky in callbacks. We'll rely on global `editMode` via simple React state access
-        // Note: In strict React, this might be stale, but for click events usually okay if re-renders happen.
-        // We check a Ref to be safe if needed, but let's try state first.
-    });
-
-    // We attach the logic inside useEffect [editMode] to ensure fresh state
+    // Resize Observer
     const resizeObserver = new ResizeObserver((entries) => {
       if (entries[0]?.contentRect) chart.applyOptions({ width: entries[0].contentRect.width, height: entries[0].contentRect.height });
     });
     resizeObserver.observe(container);
   };
 
-  // Attach Click Listener Effect
+  // Attach Click Listener
   useEffect(() => {
     const handleChartClick = (param: MouseEventParams, instrument: string) => {
         if (!editMode || editMode.symbol !== instrument.toUpperCase() || !param.point) return;
@@ -233,14 +223,40 @@ export default function TradingReplayPage() {
         const chartObj = chartsRef.current[instrument];
         if (!chartObj) return;
 
-        // Convert coordinate to price
         const price = chartObj.series.coordinateToPrice(param.point.y);
         if (!price) return;
 
-        // Update Position
+        const currentPrice = engineRef.current[instrument as "es"|"nq"].currentPrice;
+        
+        // --- STRICT VALIDATION TO PREVENT INSTANT CLOSE ---
         setPositions(prev => {
             const pos = prev[editMode.symbol];
             if (!pos) return prev;
+
+            let isValid = true;
+            let errorMsg = "";
+
+            if (pos.side === "LONG") {
+                if (editMode.type === "SL" && price >= currentPrice) {
+                    isValid = false; errorMsg = `Long SL must be BELOW ${currentPrice.toFixed(2)}`;
+                }
+                if (editMode.type === "TP" && price <= currentPrice) {
+                    isValid = false; errorMsg = `Long TP must be ABOVE ${currentPrice.toFixed(2)}`;
+                }
+            } else {
+                // SHORT
+                if (editMode.type === "SL" && price <= currentPrice) {
+                    isValid = false; errorMsg = `Short SL must be ABOVE ${currentPrice.toFixed(2)}`;
+                }
+                if (editMode.type === "TP" && price >= currentPrice) {
+                    isValid = false; errorMsg = `Short TP must be BELOW ${currentPrice.toFixed(2)}`;
+                }
+            }
+
+            if (!isValid) {
+                alert(`⚠️ Invalid ${editMode.type}!\n\n${errorMsg}\n\nPrevented placement to avoid instant exit.`);
+                return prev; 
+            }
             
             return {
                 ...prev,
@@ -251,11 +267,9 @@ export default function TradingReplayPage() {
             };
         });
 
-        // Exit Edit Mode
         setEditMode(null);
     };
 
-    // Re-bind listeners when editMode changes
     if (chartsRef.current.es) {
         chartsRef.current.es.chart.unsubscribeClick();
         chartsRef.current.es.chart.subscribeClick((p: any) => handleChartClick(p, "es"));
@@ -266,7 +280,6 @@ export default function TradingReplayPage() {
     }
 
   }, [editMode]);
-
 
   useEffect(() => {
     if ((layout === "ES" || layout === "SPLIT") && chartContainerRefs.es.current) initChart("es", chartContainerRefs.es.current!);
@@ -363,17 +376,9 @@ export default function TradingReplayPage() {
     finally { setIsLoading(false); }
   };
 
-  // --- Handlers ---
-  const jumpTo1450 = () => {
-      loadData(selectedDay, 14 * 60 + 50);
-      setJumpHour(14); setJumpMin(50);
-  };
-  const jumpToSpecificTime = () => {
-      loadData(selectedDay, jumpHour * 60 + jumpMin);
-  };
-  const handleDaySelect = (d: string) => {
-    setSelectedDay(d); loadData(d, MARKET_OPEN_MIN);
-  };
+  const jumpTo1450 = () => { loadData(selectedDay, 14 * 60 + 50); setJumpHour(14); setJumpMin(50); };
+  const jumpToSpecificTime = () => { loadData(selectedDay, jumpHour * 60 + jumpMin); };
+  const handleDaySelect = (d: string) => { setSelectedDay(d); loadData(d, MARKET_OPEN_MIN); };
 
   // --- Engine ---
   const checkAndFetchMore = async () => {
@@ -449,22 +454,32 @@ export default function TradingReplayPage() {
   const updatePnL = () => {
     setPositions(prev => {
       const next = { ...prev };
+      let changed = false;
+
       Object.keys(next).forEach(key => {
         const pos = next[key];
         const currentPrice = engineRef.current[key.toLowerCase() as "es"|"nq"].currentPrice;
-        if (!currentPrice) return;
+        if (!currentPrice || currentPrice === 0) return; 
+
         const inst = INSTRUMENTS[key.toLowerCase()];
         const multi = contractType === "MINI" ? inst.multiplierMini : inst.multiplierMicro;
         const diff = pos.side === "LONG" ? (currentPrice - pos.avgPrice) : (pos.avgPrice - currentPrice);
         pos.pnl = diff * multi * pos.size;
 
+        // Execution Check
         if (pos.sl && ((pos.side === "LONG" && currentPrice <= pos.sl) || (pos.side === "SHORT" && currentPrice >= pos.sl))) {
-           setAccountBalance(b => b + pos.pnl); delete next[key]; updateChartLines(key, null); 
+           setAccountBalance(b => b + pos.pnl); 
+           delete next[key]; 
+           updateChartLines(key, null); 
+           changed = true;
         } else if (pos.tp && ((pos.side === "LONG" && currentPrice >= pos.tp) || (pos.side === "SHORT" && currentPrice <= pos.tp))) {
-           setAccountBalance(b => b + pos.pnl); delete next[key]; updateChartLines(key, null);
+           setAccountBalance(b => b + pos.pnl);
+           delete next[key]; 
+           updateChartLines(key, null);
+           changed = true;
         }
       });
-      return next;
+      return changed ? next : prev;
     });
   };
 

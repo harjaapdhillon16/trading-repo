@@ -1,10 +1,21 @@
 {
   "compilerOptions": {
-    "target": "ES2017",
+    "target": "ESNext",
     "lib": ["dom", "dom.iterable", "esnext"],
     "allowJs": true,
     "skipLibCheck": true,
-    "strict": true,
+    "strict": false,                     // The big one: disables all strict type-checking
+    "noImplicitAny": false,              // Allows variables to be 'any' implicitly
+    "strictNullChecks": false,           // Allows 'null' and 'undefined' to be assigned to any type
+    "strictFunctionTypes": false,
+    "strictBindCallApply": false,
+    "strictPropertyInitialization": false,
+    "noImplicitThis": false,
+    "alwaysStrict": false,
+    "noUnusedLocals": false,             // Won't complain about unused variables
+    "noUnusedParameters": false,         // Won't complain about unused function params
+    "noImplicitReturns": false,
+    "noFallthroughCasesInSwitch": false,
     "noEmit": true,
     "esModuleInterop": true,
     "module": "esnext",
